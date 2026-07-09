@@ -67,22 +67,25 @@ Ran head-to-head benchmark (50K/200K/593K records) to verify what's performant:
 ```
 src/clinicaltrials_parser/
 ├── __init__.py
-├── client.py            (145 lines)
+├── aact.py              (173 lines — AACT PostgreSQL client)
+├── client.py            (290 lines — sync + async clients, rate limiters)
 ├── models.py            (250 lines)
-├── parser.py            (144 lines)
-├── storage.py           (300 lines — PolarsParquetWriter, IcebergWriter added)
-└── cli.py               (168 lines — --compression, --batch-size, iceberg format)
+├── parser.py            (145 lines — progress_callback param)
+├── storage.py           (530 lines — SchemaValidator, IcebergWriter with partitioning)
+└── cli.py               (200 lines — --progress, --validate-schema, --partition-by, --source)
 tests/
-├── test_client.py       (unit + optional integration)
-├── test_models.py       (flat_dict test updated for non-stripping behavior)
-└── test_storage.py      (PolarsParquetWriter + IcebergWriter tests added)
-pyproject.toml
-requirements.txt
+├── test_aact.py         (AactClient unit tests x2)
+├── test_client.py       (unit + async + optional integration)
+├── test_iceberg_e2e.py  (full pipeline + partitioned)
+├── test_models.py       (flat_dict tests)
+└── test_storage.py      (all writers + SchemaValidator)
+pyproject.toml           (pandas→polars, tqdm added, [aact] extra)
+requirements.txt         (pandas→polars, tqdm added)
 data/                   (output directory)
 ```
 
 ## Test results
-- **31 unit tests pass** (7 new: PolarsParquet batch/empty/compression + Iceberg write/batch/snappy + StorageWriter compression)
+- **38 unit tests pass** (new: PolarsParquet batch/empty/compression + Iceberg write/batch/snappy + StorageWriter compression + end-to-end pipeline + partitioned Iceberg + async client x3 + AACT x2)
 - Integration tests skipped by default (set `CTGOV_INTEGRATION_TESTS=1`)
 - ruff: clean
 
@@ -93,12 +96,41 @@ data/                   (output directory)
 - **Fallback:** PyIceberg 0.10.0 with `SqlCatalog` + `FsspecFileIO` (confirmed working on Windows today).
 - If neither is available: raises `ImportError` suggesting `pip install clinicaltrials-parser[iceberg]`.
 - Added `pyiceberg[sql-sqlite]>=0.7` to dev dependencies.
-- All 31 tests pass: Iceberg tests exercise the PyIceberg fallback path and verify output with `iceberg_scan()`.
 
-### Next / open questions
-- Add schema inference/validation for CSV/Parquet/Iceberg column types
-- AACT database support as alternative data source
-- Async version with `httpx.AsyncClient` for higher throughput
-- Consider replacing remaining Pandas usage with Polars
-- Add partitioned Iceberg writes (by status, study_type, etc.)
-- Progress bar for large fetches (tqdm/rich)
+### DONE — Pandas → Polars cleanup
+- `pandas>=2` removed from `pyproject.toml` and `requirements.txt` — was never imported anywhere in the codebase.
+- Only Polars + PyArrow used for tabular data handling.
+
+### DONE — Progress bar (tqdm)
+- `--progress/--no-progress` flag (default on) added to CLI `fetch` command.
+- Fetches `get_total_count()` first for determinate progress bar; falls back to indeterminate if count fails.
+- `tqdm>=4.66` added as core dependency.
+- `progress_callback` parameter added to `parser.to_storage()`.
+
+### DONE — Schema inference/validation
+- `SchemaValidator` class in `storage.py` infers types from first record; warns on type drift in subsequent records (capped at 10 warnings).
+- Integrated at `StorageWriter` level (applies to all formats).
+- `--validate-schema/--no-validate-schema` flag (default on).
+
+### DONE — Partitioned Iceberg writes
+- `--partition-by <field>` CLI flag (e.g. overall_status, study_type).
+- DuckDB path: `PARTITION_BY (col)` in COPY statement.
+- PyIceberg path: `IdentityTransform` + `PartitionSpec` on table creation.
+- Validates partition field exists in schema; warns and skips if missing.
+
+### DONE — Async client (httpx.AsyncClient)
+- `AsyncClinicalTrialsClient` in `client.py` mirrors the sync interface.
+- `AsyncRateLimiter` with `asyncio.sleep` for rate limiting.
+- Methods: `get_total_count`, `get_study`, `get_studies_page`, `iter_studies`, `fetch_all_studies`, `get_field_metadata`, `get_search_areas`, `get_enums`.
+- 3 unit tests with mocked responses.
+
+### DONE — AACT database support
+- `AactClient` in `aact.py` connects to public AACT PostgreSQL (`aact-db.ctti-clinicaltrials.org`, read-only user `aact`).
+- Queries `studies`, `conditions`, `interventions`, `sponsors` tables; reconstructs API-format nested dicts.
+- `--source aact` CLI flag to switch from API to AACT.
+- Optional dependency: `pip install clinicaltrials-parser[aact]` (psycopg2-binary).
+- 2 unit tests with mocked psycopg2.
+
+### Test files added
+- `tests/test_aact.py` — AactClient unit tests (mocked psycopg2)
+- `tests/test_iceberg_e2e.py` — full pipeline test (parser→storage→iceberg) + partitioned write test
