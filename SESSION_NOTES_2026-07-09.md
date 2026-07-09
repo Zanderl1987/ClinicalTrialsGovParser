@@ -151,6 +151,13 @@ data/                   (output directory)
 - AACT cloud access requires free registration at https://aact.ctti-clinicaltrials.org/connect
 - Real API tests blocked (403) — gated behind `CTGOV_INTEGRATION_TESTS=1`
 
+### DONE — Clean-env `[iceberg]` install verification
+- Created fresh venv, installed from wheel `clinicaltrials_parser[iceberg]` — resolved all 38 deps cleanly.
+- **IcebergWriter: OK** (uses DuckDB 1.5.4 `COPY TO (FORMAT ICEBERG)` fast path)
+- `StorageWriter` (jsonl/json/csv): OK
+- `AactClient` correctly raises `ImportError` (needs `[aact]` extra — expected).
+- Added `duckdb>=0.10` to `[iceberg]` extra — ensures DuckDB Iceberg path is always available on `pip install clinicaltrials-parser[iceberg]`.
+- PyIceberg fallback is preserved for Linux/macOS users who install PyIceberg standalone; Windows users get DuckDB path.
+
 ### Next Move
-- Verify `pip install clinicaltrials-parser[iceberg]` from a clean env
 - Push to PyPI with `twine upload dist/*`

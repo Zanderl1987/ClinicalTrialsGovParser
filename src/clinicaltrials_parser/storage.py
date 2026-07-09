@@ -434,7 +434,7 @@ class IcebergWriter(BaseWriter):
             "default",
             **{
                 "uri": f"sqlite:///{catalog_db.as_posix()}",
-                "warehouse": str(self.path.parent),
+                "warehouse": self.path.parent.as_posix(),
                 "io-impl": "pyiceberg.io.fsspec.FsspecFileIO",
             },
         )
@@ -471,11 +471,13 @@ class IcebergWriter(BaseWriter):
                     )
                 )
 
+        kwargs: dict[str, Any] = {"location": self.path.as_posix()}
+        if partition_spec is not None:
+            kwargs["partition_spec"] = partition_spec
         table = catalog.create_table(
             ("ctgov", self.table_name),
             schema,
-            partition_spec=partition_spec,
-            location=str(self.path),
+            **kwargs,
         )
 
         for pf in parquet_files:
