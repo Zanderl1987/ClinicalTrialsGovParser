@@ -71,7 +71,7 @@ src/clinicaltrials_parser/
 ├── client.py            (290 lines — sync + async clients, rate limiters)
 ├── models.py            (250 lines)
 ├── parser.py            (145 lines — progress_callback param)
-├── storage.py           (530 lines — SchemaValidator, IcebergWriter with partitioning)
+├── storage.py           (563 lines — SchemaValidator, IcebergWriter with partitioning, DuckDB/PyIceberg probe)
 └── cli.py               (200 lines — --progress, --validate-schema, --partition-by, --source)
 tests/
 ├── test_aact.py         (AactClient unit tests x2)
