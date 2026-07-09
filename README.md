@@ -1,0 +1,196 @@
+# ClinicalTrials.gov Parser
+
+Fetch, parse, and export all ~593K clinical trial records from [ClinicalTrials.gov](https://clinicaltrials.gov) using the public API v2. No API key required.
+
+Outputs to JSONL, JSON array, CSV, Parquet, or DuckDB.
+
+## Install
+
+```bash
+pip install -e ".[dev]"
+```
+
+For DuckDB support:
+
+```bash
+pip install -e ".[duckdb,dev]"
+```
+
+## CLI Usage
+
+### Fetch all studies
+
+```bash
+# Default: JSONL (one JSON object per line)
+ctgov-parser fetch
+
+# Custom output path
+ctgov-parser fetch -o data/studies.jsonl
+
+# Parquet format
+ctgov-parser fetch -f parquet -o data/studies.parquet
+```
+
+### Filtered queries
+
+```bash
+# By condition
+ctgov-parser fetch --query-cond "Type 2 Diabetes" -o diabetes.jsonl
+
+# By status
+ctgov-parser fetch --status "RECRUITING,ACTIVE_NOT_RECRUITING" -o active.jsonl
+
+# By phase
+ctgov-parser fetch --phase "PHASE3" -o phase3.jsonl
+
+# By study type
+ctgov-parser fetch --study-type "OBSERVATIONAL" -o observational.jsonl
+
+# Full-text search
+ctgov-parser fetch --query-term "cancer immunotherapy" -o immuno.jsonl
+
+# Sponsor
+ctgov-parser fetch --query-spons "Pfizer" -o pfizer.jsonl
+
+# Combine filters
+ctgov-parser fetch \
+  --query-cond "melanoma" \
+  --status "RECRUITING" \
+  --phase "PHASE2,PHASE3" \
+  -f parquet \
+  -o melanoma_active_p2p3.parquet
+```
+
+### Limit & resume
+
+```bash
+# Fetch only 1000 studies
+ctgov-parser fetch --max-studies 1000 -o sample.jsonl
+
+# Resume an interrupted download
+ctgov-parser fetch --resume resume-state.json -o studies.jsonl
+```
+
+### Stats
+
+```bash
+# Total count
+ctgov-parser stats
+
+# Count with filters
+ctgov-parser stats --query-cond "cancer" --status "RECRUITING"
+```
+
+### Field reference
+
+```bash
+ctgov-parser fields
+```
+
+## Output formats
+
+| Format | CLI flag | Extension | Notes |
+|--------|----------|-----------|-------|
+| JSONL | `-f jsonl` | `.jsonl` | Default. One record per line |
+| JSON array | `-f json` | `.json` | Wraps all records in `[...]` |
+| CSV | `-f csv` | `.csv` | Flattens nested dicts; lists joined with `; ` |
+| Parquet | `-f parquet` | `.parquet` | Columnar, good for analytics |
+| DuckDB | `-f duckdb` | `.db` | Writes to table (use `--table` to rename) |
+
+## Flat vs full records
+
+By default (`--flat`), records are flattened to a simple key-value dict:
+
+```
+nct_id, brief_title, overall_status, study_type, phases,
+conditions, intervention_types, lead_sponsor, enrollment_count, has_results
+```
+
+Use `--no-flat` to preserve the complete nested JSON structure from the API.
+
+## Python API
+
+```python
+from clinicaltrials_parser import ClinicalTrialsClient, StudyParser
+from clinicaltrials_parser.storage import StorageWriter
+
+# Low-level client
+client = ClinicalTrialsClient(rate_limit=10)
+
+# Get total count
+print(client.get_total_count())
+
+# Fetch a single study
+study = client.get_study("NCT04000009")
+
+# Iterate with filters
+for raw in client.iter_studies(query_cond="diabetes", filter_overallStatus=["RECRUITING"]):
+    print(raw["protocolSection"]["identificationModule"]["nctId"])
+
+# High-level parser with auto-flatten + storage
+parser = StudyParser(client=client)
+parser.to_storage(
+    output_path="diabetes.parquet",
+    fmt="parquet",
+    flat=True,
+    **{"query.cond": "Type 2 Diabetes", "filter.overallStatus": ["RECRUITING"]}
+)
+
+# Using the parser as an iterator
+writer = StorageWriter(fmt="jsonl")
+writer.open("out.jsonl")
+for parsed in parser.parse_all(flat=True, **{"query.cond": "cancer"}):
+    writer.write(parsed)
+writer.close()
+```
+
+## Data model
+
+The API returns a nested JSON structure per study. The key sections in `protocolSection` are:
+
+| Module | Contents |
+|--------|----------|
+| `identificationModule` | NCT ID, title, organization |
+| `statusModule` | Overall status, verification date |
+| `sponsorCollaboratorsModule` | Lead sponsor, collaborators |
+| `designModule` | Study type, phases, enrollment, design info |
+| `conditionsModule` | Medical conditions, keywords |
+| `armsInterventionsModule` | Arm groups, interventions |
+| `outcomesModule` | Primary/secondary/other outcomes |
+| `eligibilityModule` | Criteria, age, sex, healthy volunteers |
+| `contactsLocationsModule` | Facility locations, officials |
+| `descriptionModule` | Brief summary |
+| `oversightModule` | FDA regulation, DMC, oversight authorities |
+
+Studies with results also include a `resultsSection` with baseline data, outcome measures, and adverse events.
+
+## Integration tests
+
+Real API tests are skipped by default. To run them:
+
+```bash
+set CTGOV_INTEGRATION_TESTS=1
+pytest tests/ -v -k "Integration"
+```
+
+Note: some environments may receive 403 from clinicaltrials.gov.
+
+## Project structure
+
+```
+src/clinicaltrials_parser/
+├── __init__.py          # Public exports
+├── client.py            # HTTP client, rate limiting, pagination
+├── models.py            # Pydantic models matching API schema
+├── parser.py            # Fetch, parse, flatten, resume
+├── storage.py           # Output writers (jsonl/json/csv/parquet/duckdb)
+└── cli.py               # Click CLI
+tests/
+├── test_client.py       # Unit tests + optional integration
+├── test_models.py       # Model parsing tests
+└── test_storage.py      # Writer tests
+```
+
+## License
+
+MIT. Data from ClinicalTrials.gov is in the public domain.

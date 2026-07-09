@@ -1,0 +1,2 @@
+[console_scripts]
+ctgov-parser = clinicaltrials_parser.cli:main
