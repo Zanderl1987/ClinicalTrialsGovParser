@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.egg/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+data/
+*.duckdb
+*.db
+.iceberg_staging/
+.iceberg_catalog.db/
+.DS_Store
