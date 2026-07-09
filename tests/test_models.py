@@ -33,7 +33,14 @@ RAW_STUDY = {
                     "type": "EXPERIMENTAL",
                     "interventionNames": ["Drug: Pimavanserin"],
                 }
-            ]
+            ],
+            "interventions": [
+                {
+                    "type": "DRUG",
+                    "name": "Pimavanserin",
+                    "armGroupLabels": ["Drug - pimavanserin"],
+                }
+            ],
         },
     },
     "hasResults": True,
@@ -61,7 +68,31 @@ class TestStudy:
         assert flat["lead_sponsor"] == "ACADIA Pharmaceuticals Inc."
         assert flat["enrollment_count"] == 235
         assert flat["has_results"] is True
-        assert "intervention_types" in flat
+        assert flat["intervention_types"] == ["DRUG"]
+
+    def test_intervention_types_uses_interventions_not_arm_groups(self):
+        # Regression: intervention_types must reflect true intervention type
+        # (DRUG/DEVICE/BEHAVIORAL from armsInterventionsModule.interventions),
+        # not arm-group role (EXPERIMENTAL/PLACEBO_COMPARATOR from armGroups).
+        raw = {
+            "protocolSection": {
+                "armsInterventionsModule": {
+                    "armGroups": [
+                        {"type": "EXPERIMENTAL", "label": "Drug arm"},
+                        {"type": "PLACEBO_COMPARATOR", "label": "Placebo arm"},
+                    ],
+                    "interventions": [
+                        {"type": "DRUG", "name": "Pimavanserin"},
+                        {"type": "DRUG", "name": "Placebo"},
+                    ],
+                }
+            }
+        }
+        study = Study(**raw)
+        flat = study.flat_dict()
+        assert flat["intervention_types"] == ["DRUG"]
+        assert "EXPERIMENTAL" not in flat["intervention_types"]
+        assert "PLACEBO_COMPARATOR" not in flat["intervention_types"]
 
     def test_flat_dict_empty_study(self):
         study = Study(protocolSection={})

@@ -16,6 +16,8 @@ USER_AGENT = "ClinicalTrialsGovParser/0.1.0 (+https://github.com/clinicaltrials-
 
 class RateLimiter:
     def __init__(self, calls_per_sec: float):
+        if calls_per_sec <= 0:
+            raise ValueError(f"calls_per_sec must be > 0, got {calls_per_sec}")
         self.interval = 1.0 / calls_per_sec
         self._last = 0.0
 
@@ -148,6 +150,8 @@ class ClinicalTrialsClient:
 
 class AsyncRateLimiter:
     def __init__(self, calls_per_sec: float):
+        if calls_per_sec <= 0:
+            raise ValueError(f"calls_per_sec must be > 0, got {calls_per_sec}")
         self.interval = 1.0 / calls_per_sec
         self._last = 0.0
 

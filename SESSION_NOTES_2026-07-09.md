@@ -159,5 +159,46 @@ data/                   (output directory)
 - Added `duckdb>=0.10` to `[iceberg]` extra — ensures DuckDB Iceberg path is always available on `pip install clinicaltrials-parser[iceberg]`.
 - PyIceberg fallback is preserved for Linux/macOS users who install PyIceberg standalone; Windows users get DuckDB path.
 
+## Third pass — full code review + critical fixes
+
+Ran a full code review of the repo as of the second-pass state above (Claude Code, `superpowers` skill methodology, adversarial verification via a second subagent that independently reproduced every finding before anything was fixed). The existing `CODE_REVIEW.md`/`ADVERSARIAL_SUBAGENT.md` in the repo were stale — written before the Polars/Iceberg/AACT/async rework — so this was a fresh pass against current code, not a re-check of the old file.
+
+### Findings (all reproduced with runnable scripts, not just read)
+
+- **`-f duckdb` crashed on every use.** `StorageWriter.open()` always passed `batch_size=` to `DuckDbWriter(**kwargs)`, but `DuckDbWriter.__init__` had no such param → `TypeError` before writing anything. Never caught because `test_storage.py` only ever constructed `DuckDbWriter` directly, never through `StorageWriter(fmt="duckdb")`. This format had likely never worked despite being documented in the README.
+- **`--resume` silently destroyed all previously-written output.** Every writer opened its output in truncate ("w") mode unconditionally, including on a resume run pointed at the same path. Verified: wrote 3 records, closed, then reopened the same path — 0 bytes before any new record was written. Compounded by resume state only being saved once, after `parse_all()` fully completed (a mid-run crash never persisted progress at all).
+- **`intervention_types` field contained the wrong data.** `Study.flat_dict()` read `arm_groups[].type` (arm-group role: EXPERIMENTAL/PLACEBO_COMPARATOR) instead of `interventions[].type` (true intervention type: DRUG/DEVICE/BEHAVIORAL). Masked because `aact.py`'s AACT-source builder happened to stuff `intervention_type` into the arm_groups slot, and the one test touching this field (`test_models.py`) only asserted key presence, never the value.
+- **SQL/identifier injection via `--table` and `--partition-by`.** `DuckDbWriter` and `IcebergWriter`'s DuckDB finalize path f-string-interpolated these into raw SQL. Verified: `--table "leak AS SELECT * FROM read_csv_auto('C:/Windows/win.ini') --"` read the contents of `win.ini` into the output table instead of the intended data — directly contradicted `CODE_REVIEW.md`'s claim of "no injection vectors."
+- **Buffered records silently dropped on any mid-fetch exception.** `to_storage()` had no try/finally around `storage.open()`/`close()` — a network failure mid-run meant `close()` never ran, losing up to one full batch (default 10,000 records) for Parquet/DuckDB/Iceberg with no error surfaced.
+- **`--rate-limit 0`** crashed with a raw `ZeroDivisionError` traceback instead of a clean CLI error.
+- **`--max-studies 0`** was silently treated as "no limit" — Python falsy-0 bug in `if max_studies and count >= max_studies`.
+- **CSV writer produced unparseable cells** for list-of-dict fields (`overall_officials`, etc.) — used `str(dict)` (Python repr, single-quoted) instead of valid JSON.
+- **`_safe_flat` fallback** (used when Pydantic validation fails) silently dropped `intervention_types` and `enrollment_count`, giving failed-validation records a different schema than normal ones.
+
+### Fixes applied (branch `fix/critical-review-findings`, not yet merged/pushed)
+
+- `DuckDbWriter` accepts `batch_size`.
+- Real append support added for `jsonl`/`csv`/`duckdb` on `--resume` (line-based/table-based formats can append safely). `json`/`parquet`/`iceberg` now **refuse** to resume into an existing non-empty output with a clear error, rather than silently truncating — true in-place append isn't safe for those formats, so failing loud beats corrupting data. Resume state now also saves periodically (every `batch_size` records) and in a `finally` block, so a mid-run crash doesn't lose all progress.
+- `flat_dict()` reads `interventions[].type` instead of `arm_groups[].type`; `aact.py`'s `_build_study` now populates `armsInterventionsModule.interventions` (previously mislabeled as `armGroups`); `_safe_flat` brought in sync.
+- Table names, partition-by fields, and compression codecs validated against safe allow-lists/regex before touching raw SQL (`storage.py:_validate_identifier`).
+- `to_storage()` wraps the write loop in try/finally so `storage.close()` always runs.
+- `RateLimiter`/`AsyncRateLimiter` reject `calls_per_sec <= 0`; CLI surfaces it as `click.ClickException` instead of a traceback.
+- `max_studies` check moved before yield/increment, using `is not None` instead of truthiness — `0` now correctly means zero records.
+- `_flatten_for_csv` serializes list-of-dict elements as JSON instead of Python repr.
+- README corrected: documents the resume format restriction and that DuckDB output now actually works.
+
+### Test results
+- Added `tests/test_parser.py` (previously 0% coverage on the core orchestrator) plus regression tests in `test_storage.py`/`test_models.py`/`test_client.py` for every finding above — written to check actual **values**, not just presence/shape, since value-blind assertions are how the `intervention_types` bug went unnoticed originally.
+- **67 passed, 10 skipped** (skipped = integration tests needing live network access). No new ruff issues introduced.
+- All fixes independently re-verified against the running code (not just the test suite): `--rate-limit 0` → clean error; `--table` injection payload → rejected before touching SQL; resume run on jsonl → 3 records survive + 1 new one, instead of 0.
+
+### Not yet addressed (medium/low severity, deferred by choice)
+- `on_batch` callback on `parse_all()` still dead code from the public `to_storage()` API.
+- `requirements.txt` hard-pins `duckdb`; `pyproject.toml` core deps don't — still an install-path inconsistency.
+- No `[tool.ruff]`/`[tool.mypy]` config sections.
+- `--status "RECRUITING,"` (trailing comma) still sends an empty-string filter value to the API unvalidated.
+
 ### Next Move
+- Review the diff on `fix/critical-review-findings`, then merge and push.
+- **Before any PyPI push**, re-run the `[iceberg]`/`[duckdb]` clean-env install verification from the second pass — the duckdb-format bug fixed here means the "DuckDB: OK" claim from that earlier verification was never actually exercised through the public API.
 - Push to PyPI: `twine upload dist/clinicaltrials_parser-0.1.0*` — needs PyPI API token config (user will provide when ready)

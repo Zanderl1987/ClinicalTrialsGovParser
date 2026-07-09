@@ -45,6 +45,11 @@ class StudyParser:
         except Exception as e:
             logger.warning("Could not save resume state: %s", e)
 
+    @property
+    def is_resuming(self) -> bool:
+        """True if a resume file was loaded and it contained prior progress."""
+        return bool(self.resume_file and self._fetched_ids)
+
     def parse_all(
         self,
         max_studies: int | None = None,
@@ -56,43 +61,49 @@ class StudyParser:
         count = 0
         batch: list[dict[str, Any]] = []
 
-        for raw_study in self.client.iter_studies(fields=fields, **query_params):
-            nct_id = (
-                raw_study.get("protocolSection", {})
-                .get("identificationModule", {})
-                .get("nctId")
-            )
-            if nct_id and nct_id in self._fetched_ids:
-                continue
+        try:
+            for raw_study in self.client.iter_studies(fields=fields, **query_params):
+                if max_studies is not None and count >= max_studies:
+                    break
 
-            if flat:
-                try:
-                    study = Study(**raw_study)
-                    parsed = study.flat_dict()
-                except Exception as e:
-                    logger.debug("Could not parse study %s: %s", nct_id, e)
-                    parsed = self._safe_flat(raw_study)
-            else:
-                parsed = raw_study
+                nct_id = (
+                    raw_study.get("protocolSection", {})
+                    .get("identificationModule", {})
+                    .get("nctId")
+                )
+                if nct_id and nct_id in self._fetched_ids:
+                    continue
 
-            if nct_id:
-                self._fetched_ids.add(nct_id)
-            yield parsed
-            count += 1
+                if flat:
+                    try:
+                        study = Study(**raw_study)
+                        parsed = study.flat_dict()
+                    except Exception as e:
+                        logger.debug("Could not parse study %s: %s", nct_id, e)
+                        parsed = self._safe_flat(raw_study)
+                else:
+                    parsed = raw_study
 
-            if on_batch:
-                batch.append(parsed)
-                if len(batch) >= self.batch_size:
-                    on_batch(batch)
-                    batch = []
+                if nct_id:
+                    self._fetched_ids.add(nct_id)
+                yield parsed
+                count += 1
 
-            if max_studies and count >= max_studies:
-                break
+                if on_batch:
+                    batch.append(parsed)
+                    if len(batch) >= self.batch_size:
+                        on_batch(batch)
+                        batch = []
 
-        if on_batch and batch:
-            on_batch(batch)
+                if count % self.batch_size == 0:
+                    self._save_resume_state()
 
-        self._save_resume_state()
+            if on_batch and batch:
+                on_batch(batch)
+        finally:
+            # Always persist progress, including on a mid-fetch exception, so a
+            # crash doesn't lose track of everything already fetched this run.
+            self._save_resume_state()
 
     @staticmethod
     def _safe_flat(raw: dict[str, Any]) -> dict[str, Any]:
@@ -102,6 +113,11 @@ class StudyParser:
         design_mod = ps.get("designModule") or {}
         cond_mod = ps.get("conditionsModule") or {}
         sponsor_mod = ps.get("sponsorCollaboratorsModule") or {}
+        arms_mod = ps.get("armsInterventionsModule") or {}
+        enrollment_info = design_mod.get("enrollmentInfo") or {}
+        intervention_types = list({
+            i.get("type") for i in (arms_mod.get("interventions") or []) if i.get("type")
+        })
         return {
             "nct_id": id_mod.get("nctId"),
             "brief_title": id_mod.get("briefTitle"),
@@ -110,7 +126,9 @@ class StudyParser:
             "study_type": design_mod.get("studyType"),
             "phases": design_mod.get("phases"),
             "conditions": cond_mod.get("conditions"),
+            "intervention_types": intervention_types or None,
             "lead_sponsor": (sponsor_mod.get("leadSponsor") or {}).get("name"),
+            "enrollment_count": enrollment_info.get("count"),
             "has_results": raw.get("hasResults"),
         }
 
@@ -127,16 +145,18 @@ class StudyParser:
         output_path = Path(output_path)
         self.storage.fmt = fmt
         self.storage.output_path = output_path
-        self.storage.open()
+        self.storage.open(resume=self.is_resuming)
 
         written = 0
-        for parsed in self.parse_all(max_studies=max_studies, fields=fields, flat=flat, **query_params):
-            self.storage.write(parsed)
-            written += 1
-            if progress_callback:
-                progress_callback(1)
+        try:
+            for parsed in self.parse_all(max_studies=max_studies, fields=fields, flat=flat, **query_params):
+                self.storage.write(parsed)
+                written += 1
+                if progress_callback:
+                    progress_callback(1)
+        finally:
+            self.storage.close()
 
-        self.storage.close()
         logger.info("Wrote %d studies to %s", written, output_path)
         return output_path
 

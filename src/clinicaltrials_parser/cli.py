@@ -116,7 +116,10 @@ def fetch(
             )
         client = AactClient()
     else:
-        client = ClinicalTrialsClient(page_size=page_size, rate_limit=rate_limit)
+        try:
+            client = ClinicalTrialsClient(page_size=page_size, rate_limit=rate_limit)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
 
     storage = StorageWriter(fmt=format, batch_size=batch_size, compression=compression, validate_schema=validate_schema, partition_by=partition_by)
     if format in ("duckdb", "iceberg"):
@@ -151,33 +154,36 @@ def fetch(
 
     out_path = Path(output)
 
-    if progress and TQDM_AVAILABLE:
-        try:
-            total = client.get_total_count(**query_params)
-        except Exception:
-            total = None
-        if max_studies and total is not None:
-            total = min(total, max_studies)
-        desc = f"Writing {format}"
-        with tqdm(total=total, desc=desc, unit="rec", unit_scale=True) as pbar:
+    try:
+        if progress and TQDM_AVAILABLE:
+            try:
+                total = client.get_total_count(**query_params)
+            except Exception:
+                total = None
+            if max_studies and total is not None:
+                total = min(total, max_studies)
+            desc = f"Writing {format}"
+            with tqdm(total=total, desc=desc, unit="rec", unit_scale=True) as pbar:
+                parser.to_storage(
+                    output_path=out_path,
+                    fmt=format,
+                    max_studies=max_studies,
+                    fields=fields,
+                    flat=flat,
+                    progress_callback=lambda n: pbar.update(n),
+                    **query_params,
+                )
+        else:
             parser.to_storage(
                 output_path=out_path,
                 fmt=format,
                 max_studies=max_studies,
                 fields=fields,
                 flat=flat,
-                progress_callback=lambda n: pbar.update(n),
                 **query_params,
             )
-    else:
-        parser.to_storage(
-            output_path=out_path,
-            fmt=format,
-            max_studies=max_studies,
-            fields=fields,
-            flat=flat,
-            **query_params,
-        )
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
     click.echo(f"Done. Output: {out_path.resolve()}")
 
 

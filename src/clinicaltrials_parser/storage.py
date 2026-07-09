@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import re
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -12,6 +13,19 @@ from typing import Any
 import polars as pl
 
 logger = logging.getLogger(__name__)
+
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_identifier(name: str, what: str) -> str:
+    """Guard against SQL/identifier injection wherever a user-supplied name
+    (table name, partition column) is interpolated into raw SQL text."""
+    if not _SAFE_IDENTIFIER.match(name):
+        raise ValueError(
+            f"Invalid {what} {name!r}: must match {_SAFE_IDENTIFIER.pattern} "
+            "(letters, digits, underscores; cannot start with a digit)"
+        )
+    return name
 
 
 def _type_name(v: Any) -> str:
@@ -83,13 +97,15 @@ class BaseWriter(ABC):
 
 
 class JsonLinesWriter(BaseWriter):
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, append: bool = False):
         self.path = path
+        self.append = append
         self._fh = None
 
     def open(self, path: Path | None = None) -> None:
         p = path or self.path
-        self._fh = open(p, "w", encoding="utf-8")
+        mode = "a" if self.append else "w"
+        self._fh = open(p, mode, encoding="utf-8")
 
     def write(self, record: dict[str, Any]) -> None:
         self._fh.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
@@ -130,7 +146,14 @@ def _flatten_for_csv(record: dict[str, Any], prefix: str = "") -> dict[str, str]
         if isinstance(v, dict):
             result.update(_flatten_for_csv(v, prefix=f"{fk}_"))
         elif isinstance(v, list):
-            result[fk] = "; ".join(str(x) for x in v) if v else ""
+            result[fk] = (
+                "; ".join(
+                    json.dumps(x, default=str) if isinstance(x, (dict, list)) else str(x)
+                    for x in v
+                )
+                if v
+                else ""
+            )
         elif v is None:
             result[fk] = ""
         else:
@@ -139,22 +162,34 @@ def _flatten_for_csv(record: dict[str, Any], prefix: str = "") -> dict[str, str]
 
 
 class CsvWriter(BaseWriter):
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, append: bool = False):
         self.path = path
+        self.append = append
         self._fh = None
         self._writer = None
         self._fieldnames: list[str] = []
+        self._write_header = True
 
     def open(self, path: Path | None = None) -> None:
-        p = path or self.path
-        self._fh = open(p, "w", encoding="utf-8", newline="")
+        p = Path(path or self.path)
+        mode = "w"
+        if self.append and p.exists() and p.stat().st_size > 0:
+            with open(p, "r", encoding="utf-8", newline="") as f:
+                existing_header = next(csv.reader(f), None)
+            if existing_header:
+                self._fieldnames = existing_header
+                self._write_header = False
+                mode = "a"
+        self._fh = open(p, mode, encoding="utf-8", newline="")
 
     def write(self, record: dict[str, Any]) -> None:
         flat = _flatten_for_csv(record)
-        if not self._fieldnames:
-            self._fieldnames = list(flat.keys())
+        if self._writer is None:
+            if not self._fieldnames:
+                self._fieldnames = list(flat.keys())
             self._writer = csv.DictWriter(self._fh, fieldnames=self._fieldnames)
-            self._writer.writeheader()
+            if self._write_header:
+                self._writer.writeheader()
         self._writer.writerow(flat)
 
     def close(self) -> None:
@@ -214,11 +249,12 @@ class PolarsParquetWriter(BaseWriter):
 
 
 class DuckDbWriter(BaseWriter):
-    def __init__(self, path: Path, table: str = "studies"):
+    def __init__(self, path: Path, table: str = "studies", batch_size: int = 10000, append: bool = False):
         self.path = path
-        self.table = table
+        self.table = _validate_identifier(table, "table name")
+        self.append = append
         self._records: list[dict[str, Any]] = []
-        self._batch_size = 10000
+        self._batch_size = batch_size
         self._table_created = False
 
     def open(self, path: Path | None = None) -> None:
@@ -227,12 +263,22 @@ class DuckDbWriter(BaseWriter):
         self._records = []
         self._table_created = False
         try:
-            import duckdb  # noqa: F401
+            import duckdb
         except ImportError:
             raise ImportError(
                 "duckdb is required for DuckDbWriter. "
                 "Install with: pip install clinicaltrials-parser[duckdb]"
             )
+
+        if self.append and Path(self.path).exists():
+            con = duckdb.connect(str(self.path))
+            try:
+                row = con.execute(
+                    "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [self.table]
+                ).fetchone()
+                self._table_created = row is not None
+            finally:
+                con.close()
 
     def write(self, record: dict[str, Any]) -> None:
         self._records.append(record)
@@ -319,11 +365,17 @@ class IcebergWriter(BaseWriter):
         batch_size: int = 10000,
         partition_by: str | None = None,
     ):
+        _VALID_COMPRESSION = {"snappy", "zstd", "gzip", "lz4", "brotli"}
+        if compression not in _VALID_COMPRESSION:
+            raise ValueError(f"Invalid compression {compression!r}: choose from {_VALID_COMPRESSION}")
+
         self.path = path
-        self.table_name = table
+        self.table_name = _validate_identifier(table, "table name")
         self.compression = compression
         self.batch_size = batch_size
-        self.partition_by = partition_by
+        self.partition_by = (
+            _validate_identifier(partition_by, "partition_by field") if partition_by else None
+        )
         self._records: list[dict[str, Any]] = []
         self._parquet_dir: Path | None = None
         self._parquet_writer: PolarsParquetWriter | None = None
@@ -522,11 +574,26 @@ class StorageWriter:
     _writer: BaseWriter | None = None
     _schema: SchemaValidator | None = None
 
-    def open(self, path: Path | None = None) -> None:
+    # jsonl/csv/duckdb can safely append to existing output (line-based or
+    # table-based formats). json (a single top-level array), parquet, and
+    # iceberg cannot be safely appended to by this writer without risking a
+    # corrupt file, so --resume refuses to reuse an existing output for them
+    # instead of silently truncating it.
+    _APPENDABLE_FORMATS = frozenset({"jsonl", "csv", "duckdb"})
+
+    def open(self, path: Path | None = None, resume: bool = False) -> None:
         p = Path(path or self.output_path)
         writer_cls = _WRITERS.get(self.fmt)
         if writer_cls is None:
             raise ValueError(f"Unknown format: {self.fmt}. Choose from: {', '.join(_WRITERS)}")
+
+        if resume and self.fmt not in self._APPENDABLE_FORMATS and self._has_existing_output(p):
+            raise ValueError(
+                f"--resume is not supported for format={self.fmt}: safe incremental append "
+                f"isn't implemented for this format, and re-opening {p} would discard the data "
+                "already written there. Use jsonl, csv, or duckdb for resumable fetches, or "
+                "point this resumed run at a new output path and merge the results afterward."
+            )
 
         kwargs: dict[str, Any] = {}
         if self.fmt == "duckdb":
@@ -540,10 +607,20 @@ class StorageWriter:
             kwargs.setdefault("batch_size", self.batch_size)
         if self.fmt == "parquet":
             kwargs.setdefault("compression", self.compression)
+        if self.fmt in self._APPENDABLE_FORMATS:
+            kwargs["append"] = resume
 
         self._writer = writer_cls(p, **kwargs)
         self._writer.open()
         self._schema = SchemaValidator(enabled=self.validate_schema)
+
+    @staticmethod
+    def _has_existing_output(p: Path) -> bool:
+        if p.is_file():
+            return p.stat().st_size > 0
+        if p.is_dir():
+            return any(p.iterdir())
+        return False
 
     def write(self, record: dict[str, Any]) -> None:
         if self._writer is None:

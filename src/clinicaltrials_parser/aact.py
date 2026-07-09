@@ -92,9 +92,9 @@ class AactClient:
         conditions = [r[0] for r in cur.fetchall()]
 
         cur.execute(AACT_INTERVENTIONS_QUERY, (nct_id,))
-        arm_groups = []
+        interventions = []
         for itype, iname in cur.fetchall():
-            arm_groups.append({"type": itype, "interventionNames": [iname]})
+            interventions.append({"type": itype, "name": iname})
 
         cur.close()
 
@@ -117,7 +117,7 @@ class AactClient:
                     "conditions": conditions,
                 },
                 "armsInterventionsModule": {
-                    "armGroups": arm_groups,
+                    "interventions": interventions,
                 },
                 "sponsorCollaboratorsModule": {
                     "leadSponsor": {

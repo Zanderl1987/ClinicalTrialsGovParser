@@ -67,9 +67,15 @@ ctgov-parser fetch \
 # Fetch only 1000 studies
 ctgov-parser fetch --max-studies 1000 -o sample.jsonl
 
-# Resume an interrupted download
+# Resume an interrupted download: appends new studies to studies.jsonl and
+# skips NCT IDs already recorded in resume-state.json
 ctgov-parser fetch --resume resume-state.json -o studies.jsonl
 ```
+
+`--resume` only supports appending for `jsonl`, `csv`, and `duckdb` output (line- or
+table-based formats). It refuses to resume into an existing `json`, `parquet`, or
+`iceberg` output — those formats can't be safely appended to in place; point a
+resumed run at a new output path instead and merge the results afterward.
 
 ### Stats
 

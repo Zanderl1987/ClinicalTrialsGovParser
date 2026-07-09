@@ -41,6 +41,18 @@ class TestRateLimiter:
         elapsed = time.monotonic() - t0
         assert elapsed < 0.1
 
+    def test_zero_rate_limit_raises_clean_error(self):
+        with pytest.raises(ValueError):
+            RateLimiter(0)
+
+    def test_negative_rate_limit_raises_clean_error(self):
+        with pytest.raises(ValueError):
+            RateLimiter(-5)
+
+    def test_zero_rate_limit_client_construction_raises(self):
+        with pytest.raises(ValueError):
+            ClinicalTrialsClient(rate_limit=0)
+
 
 def _mock_response(status_code=200, json_data=None):
     m = MagicMock(spec=httpx.Response)
@@ -131,6 +143,12 @@ class TestClinicalTrialsClientUnit:
 
 
 class TestAsyncClinicalTrialsClient:
+    def test_zero_rate_limit_raises_clean_error(self):
+        from clinicaltrials_parser.client import AsyncRateLimiter
+
+        with pytest.raises(ValueError):
+            AsyncRateLimiter(0)
+
     @pytest.mark.asyncio
     async def test_get_total_count(self):
         from clinicaltrials_parser.client import AsyncClinicalTrialsClient
