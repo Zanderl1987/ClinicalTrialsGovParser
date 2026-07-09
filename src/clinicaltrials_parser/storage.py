@@ -213,6 +213,49 @@ class DuckDbWriter(BaseWriter):
             logger.warning("Created empty DuckDB table %s.%s", self.path, self.table)
 
 
+_DUCKDB_HAS_ICEBERG: bool | None = None
+
+
+def _check_duckdb_iceberg() -> bool:
+    """Probe whether DuckDB + iceberg extension supports COPY TO (FORMAT ICEBERG).
+    Result is cached per process to avoid repeated probes.
+    """
+    global _DUCKDB_HAS_ICEBERG
+    if _DUCKDB_HAS_ICEBERG is not None:
+        return _DUCKDB_HAS_ICEBERG
+
+    _DUCKDB_HAS_ICEBERG = False
+    try:
+        import duckdb
+        import tempfile
+
+        con = duckdb.connect()
+        try:
+            con.execute("INSTALL iceberg; LOAD iceberg;")
+            con.execute("CREATE TABLE _ctgov_probe AS SELECT 1 AS x")
+            with tempfile.TemporaryDirectory() as tmp:
+                probe_dir = Path(tmp).as_posix()
+                con.execute(
+                    f"COPY _ctgov_probe TO '{probe_dir}' (FORMAT ICEBERG)"
+                )
+            _DUCKDB_HAS_ICEBERG = True
+        except Exception:
+            pass
+        finally:
+            try:
+                con.execute("DROP TABLE IF EXISTS _ctgov_probe")
+            except Exception:
+                pass
+            con.close()
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    logger.info("DuckDB Iceberg write support: %s", _DUCKDB_HAS_ICEBERG)
+    return _DUCKDB_HAS_ICEBERG
+
+
 class IcebergWriter(BaseWriter):
     def __init__(
         self,
@@ -229,6 +272,7 @@ class IcebergWriter(BaseWriter):
         self._parquet_dir: Path | None = None
         self._parquet_writer: PolarsParquetWriter | None = None
         self._num_batches = 0
+        self._use_duckdb: bool | None = None
 
     def open(self, path: Path | None = None) -> None:
         if path:
@@ -238,6 +282,18 @@ class IcebergWriter(BaseWriter):
         self._parquet_dir.mkdir(parents=True, exist_ok=True)
         self._parquet_writer = None
         self._num_batches = 0
+
+        self._use_duckdb = _check_duckdb_iceberg()
+
+        if not self._use_duckdb:
+            try:
+                import pyiceberg  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "Neither DuckDB iceberg extension (requires DuckDB >= v1.5.3) "
+                    "nor pyiceberg is available. "
+                    "Install with: pip install clinicaltrials-parser[iceberg]"
+                )
 
     def write(self, record: dict[str, Any]) -> None:
         self._records.append(record)
@@ -271,14 +327,20 @@ class IcebergWriter(BaseWriter):
         if not parquet_files:
             return
 
+        try:
+            if self._use_duckdb:
+                self._finalize_duckdb(parquet_files)
+            else:
+                self._finalize_pyiceberg(parquet_files)
+        finally:
+            self._cleanup_staging(self._parquet_dir)
+
+    def _finalize_duckdb(self, parquet_files: list[Path]) -> None:
         import duckdb
 
-        staging_dir = self.path / ".iceberg_staging"
-
+        con = duckdb.connect()
         try:
-            con = duckdb.connect()
             con.execute("INSTALL iceberg; LOAD iceberg;")
-
             file_list = ", ".join(f"'{p.as_posix()}'" for p in parquet_files)
             con.execute(
                 f"""
@@ -291,14 +353,57 @@ class IcebergWriter(BaseWriter):
                 """
             )
             logger.info(
-                "Wrote Iceberg table to %s (%d batches, compression=%s)",
+                "Wrote Iceberg table to %s (%d batches, engine=duckdb, compression=%s)",
                 self.path,
                 self._num_batches,
                 self.compression,
             )
         finally:
             con.close()
-            self._cleanup_staging(staging_dir)
+
+    def _finalize_pyiceberg(self, parquet_files: list[Path]) -> None:
+        from pyiceberg.catalog.sql import SqlCatalog
+        from pyiceberg.exceptions import NamespaceAlreadyExistsError, NoSuchTableError
+        import pyarrow.parquet as pq
+
+        catalog_db = self.path / ".iceberg_catalog.db"
+        catalog = SqlCatalog(
+            "default",
+            **{
+                "uri": f"sqlite:///{catalog_db.as_posix()}",
+                "warehouse": str(self.path.parent),
+                "io-impl": "pyiceberg.io.fsspec.FsspecFileIO",
+            },
+        )
+
+        try:
+            catalog.create_namespace(("ctgov",))
+        except NamespaceAlreadyExistsError:
+            pass
+
+        schema = pq.read_schema(parquet_files[0])
+
+        try:
+            catalog.drop_table(("ctgov", self.table_name))
+        except NoSuchTableError:
+            pass
+
+        table = catalog.create_table(
+            ("ctgov", self.table_name),
+            schema,
+            location=str(self.path),
+        )
+
+        for pf in parquet_files:
+            tbl = pq.read_table(pf)
+            table.append(tbl)
+
+        logger.info(
+            "Wrote Iceberg table to %s (%d batches, engine=pyiceberg, compression=%s)",
+            self.path,
+            self._num_batches,
+            self.compression,
+        )
 
     @staticmethod
     def _cleanup_staging(staging_dir: Path) -> None:
