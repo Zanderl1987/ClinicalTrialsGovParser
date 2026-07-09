@@ -160,4 +160,4 @@ data/                   (output directory)
 - PyIceberg fallback is preserved for Linux/macOS users who install PyIceberg standalone; Windows users get DuckDB path.
 
 ### Next Move
-- Push to PyPI with `twine upload dist/*`
+- Push to PyPI: `twine upload dist/clinicaltrials_parser-0.1.0*` — needs PyPI API token config (user will provide when ready)
