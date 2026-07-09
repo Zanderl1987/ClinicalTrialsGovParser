@@ -121,6 +121,7 @@ class StudyParser:
         max_studies: int | None = None,
         fields: str | None = None,
         flat: bool = True,
+        progress_callback: Callable[[int], None] | None = None,
         **query_params: Any,
     ) -> Path:
         output_path = Path(output_path)
@@ -132,6 +133,8 @@ class StudyParser:
         for parsed in self.parse_all(max_studies=max_studies, fields=fields, flat=flat, **query_params):
             self.storage.write(parsed)
             written += 1
+            if progress_callback:
+                progress_callback(1)
 
         self.storage.close()
         logger.info("Wrote %d studies to %s", written, output_path)

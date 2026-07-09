@@ -130,6 +130,45 @@ class TestClinicalTrialsClientUnit:
                 break
 
 
+class TestAsyncClinicalTrialsClient:
+    @pytest.mark.asyncio
+    async def test_get_total_count(self):
+        from clinicaltrials_parser.client import AsyncClinicalTrialsClient
+
+        client = AsyncClinicalTrialsClient(page_size=10)
+        with patch.object(client, "_request") as mock_request:
+            mock_request.return_value = _mock_response(json_data={"totalCount": 593126})
+            count = await client.get_total_count()
+            assert count == 593126
+
+    @pytest.mark.asyncio
+    async def test_iter_studies(self):
+        from clinicaltrials_parser.client import AsyncClinicalTrialsClient
+
+        client = AsyncClinicalTrialsClient(page_size=10)
+        with patch.object(client, "get_studies_page") as mock_method:
+            mock_method.side_effect = [
+                ([SAMPLE_STUDY], "token2"),
+                ([SAMPLE_STUDY], None),
+            ]
+            results = []
+            async for study in client.iter_studies(pageSize=10):
+                results.append(study)
+            assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_all_studies(self):
+        from clinicaltrials_parser.client import AsyncClinicalTrialsClient
+
+        client = AsyncClinicalTrialsClient(page_size=10)
+        with patch.object(client, "get_studies_page") as mock_method:
+            mock_method.side_effect = [
+                ([SAMPLE_STUDY], None),
+            ]
+            results = await client.fetch_all_studies(pageSize=10)
+            assert len(results) == 1
+
+
 run_integration = pytest.mark.skipif(
     not os.environ.get("CTGOV_INTEGRATION_TESTS"),
     reason="Set CTGOV_INTEGRATION_TESTS=1 to run integration tests (requires network access to clinicaltrials.gov)",

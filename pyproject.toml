@@ -20,13 +20,14 @@ dependencies = [
   "pydantic>=2.5",
   "click>=8.1",
   "pyarrow>=14",
-  "pandas>=2",
   "polars>=1.0",
+  "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
 duckdb = ["duckdb>=0.10"]
 iceberg = ["pyiceberg[sql-sqlite]>=0.7"]
+aact = ["psycopg2-binary>=2.9"]
 dev = ["pytest>=7", "pytest-asyncio>=0.23", "ruff>=0.3", "mypy>=1.8", "pyiceberg[sql-sqlite]>=0.7"]
 
 [project.scripts]

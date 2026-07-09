@@ -10,6 +10,20 @@ from clinicaltrials_parser.client import ClinicalTrialsClient
 from clinicaltrials_parser.parser import StudyParser
 from clinicaltrials_parser.storage import StorageWriter
 
+try:
+    from clinicaltrials_parser.aact import AactClient
+
+    AACT_AVAILABLE = True
+except ImportError:
+    AACT_AVAILABLE = False
+
+try:
+    from tqdm import tqdm
+
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +43,8 @@ def main(verbose: int) -> None:
 
 
 @main.command()
+@click.option("--source", type=click.Choice(["api", "aact"]), default="api", show_default=True,
+              help="Data source: ClinicalTrials.gov API or AACT database")
 @click.option("-o", "--output", type=click.Path(), default="studies.jsonl", show_default=True)
 @click.option(
     "-f", "--format",
@@ -36,16 +52,21 @@ def main(verbose: int) -> None:
     default="jsonl", show_default=True,
 )
 @click.option("--table", default="studies", help="DuckDB table name or Iceberg table name")
+@click.option("--partition-by", type=str, default=None,
+              help="Iceberg partition field (e.g. overall_status, study_type)")
 @click.option("--compression", type=click.Choice(["snappy", "zstd", "gzip", "lz4", "brotli"]), default="snappy", show_default=True,
               help="Parquet compression codec (parquet/iceberg formats)")
 @click.option("--batch-size", type=int, default=10000, show_default=True,
               help="Records per batch for streaming writes (parquet/duckdb/iceberg)")
+@click.option("--validate-schema/--no-validate-schema", default=True, show_default=True,
+              help="Detect and warn on schema drift across records")
 @click.option("--page-size", type=int, default=100, show_default=True)
 @click.option("--max-studies", type=int, default=None, help="Stop after N studies")
 @click.option("--rate-limit", type=float, default=10, show_default=True)
 @click.option("--fields", type=str, default=None, help="Comma-separated field list")
 @click.option("--flat/--no-flat", default=True, help="Flatten nested structure")
 @click.option("--resume", type=click.Path(), default=None, help="Resume state file")
+@click.option("--progress/--no-progress", default=True, help="Show progress bar")
 @click.option("--query-term", type=str, default=None, help="Full-text search term")
 @click.option("--query-cond", type=str, default=None, help="Condition filter")
 @click.option("--query-intr", type=str, default=None, help="Intervention filter")
@@ -64,17 +85,21 @@ def main(verbose: int) -> None:
     default=None,
 )
 def fetch(
+    source: str,
     output: str,
     format: str,
     table: str,
+    partition_by: str | None,
     compression: str,
     batch_size: int,
+    validate_schema: bool,
     page_size: int,
     max_studies: int | None,
     rate_limit: float,
     fields: str | None,
     flat: bool,
     resume: str | None,
+    progress: bool,
     query_term: str | None,
     query_cond: str | None,
     query_intr: str | None,
@@ -84,8 +109,16 @@ def fetch(
     phase: str | None,
     study_type: str | None,
 ) -> None:
-    client = ClinicalTrialsClient(page_size=page_size, rate_limit=rate_limit)
-    storage = StorageWriter(fmt=format, batch_size=batch_size, compression=compression)
+    if source == "aact":
+        if not AACT_AVAILABLE:
+            raise click.ClickException(
+                "psycopg2 is required for AACT. Install with: pip install clinicaltrials-parser[aact]"
+            )
+        client = AactClient()
+    else:
+        client = ClinicalTrialsClient(page_size=page_size, rate_limit=rate_limit)
+
+    storage = StorageWriter(fmt=format, batch_size=batch_size, compression=compression, validate_schema=validate_schema, partition_by=partition_by)
     if format in ("duckdb", "iceberg"):
         storage.table = table
 
@@ -118,14 +151,33 @@ def fetch(
 
     out_path = Path(output)
 
-    parser.to_storage(
-        output_path=out_path,
-        fmt=format,
-        max_studies=max_studies,
-        fields=fields,
-        flat=flat,
-        **query_params,
-    )
+    if progress and TQDM_AVAILABLE:
+        try:
+            total = client.get_total_count(**query_params)
+        except Exception:
+            total = None
+        if max_studies and total is not None:
+            total = min(total, max_studies)
+        desc = f"Writing {format}"
+        with tqdm(total=total, desc=desc, unit="rec", unit_scale=True) as pbar:
+            parser.to_storage(
+                output_path=out_path,
+                fmt=format,
+                max_studies=max_studies,
+                fields=fields,
+                flat=flat,
+                progress_callback=lambda n: pbar.update(n),
+                **query_params,
+            )
+    else:
+        parser.to_storage(
+            output_path=out_path,
+            fmt=format,
+            max_studies=max_studies,
+            fields=fields,
+            flat=flat,
+            **query_params,
+        )
     click.echo(f"Done. Output: {out_path.resolve()}")
 
 

@@ -14,6 +14,60 @@ import polars as pl
 logger = logging.getLogger(__name__)
 
 
+def _type_name(v: Any) -> str:
+    if isinstance(v, list):
+        if not v:
+            return "list[empty]"
+        elem_types = sorted({type(e).__name__ for e in v})
+        return f"list[{','.join(elem_types)}]"
+    if isinstance(v, dict):
+        return "dict"
+    if v is None:
+        return "null"
+    return type(v).__name__
+
+
+class SchemaValidator:
+    """Lightweight schema tracker: infers types from the first record
+    and warns on type drift in subsequent records.
+    """
+
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+        self.fields: dict[str, str] | None = None
+        self._drift_count = 0
+
+    def validate(self, record: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        if self.fields is None:
+            self.fields = {k: _type_name(v) for k, v in record.items()}
+            return
+
+        for k, v in record.items():
+            expected = self.fields.get(k)
+            actual = _type_name(v)
+            if expected is not None and expected != actual and actual != "null":
+                self._drift_count += 1
+                if self._drift_count <= 10:
+                    logger.warning(
+                        "Schema drift at field %r: expected %s, got %s",
+                        k, expected, actual,
+                    )
+
+        missing = set(self.fields) - set(record)
+        if missing:
+            for k in missing:
+                logger.debug("Record missing field: %s", k)
+
+    def summary(self) -> str | None:
+        if self.fields is None:
+            return None
+        cols = ", ".join(f"{k}:{t}" for k, t in self.fields.items())
+        drifts = f", {self._drift_count} drift warnings" if self._drift_count else ""
+        return f"Schema: [{cols}]{drifts}"
+
+
 class BaseWriter(ABC):
     @abstractmethod
     def open(self, path: Path) -> None:
@@ -263,11 +317,13 @@ class IcebergWriter(BaseWriter):
         table: str = "studies",
         compression: str = "snappy",
         batch_size: int = 10000,
+        partition_by: str | None = None,
     ):
         self.path = path
         self.table_name = table
         self.compression = compression
         self.batch_size = batch_size
+        self.partition_by = partition_by
         self._records: list[dict[str, Any]] = []
         self._parquet_dir: Path | None = None
         self._parquet_writer: PolarsParquetWriter | None = None
@@ -342,6 +398,9 @@ class IcebergWriter(BaseWriter):
         try:
             con.execute("INSTALL iceberg; LOAD iceberg;")
             file_list = ", ".join(f"'{p.as_posix()}'" for p in parquet_files)
+            partition_clause = (
+                f", PARTITION_BY ({self.partition_by})" if self.partition_by else ""
+            )
             con.execute(
                 f"""
                 COPY (
@@ -349,14 +408,16 @@ class IcebergWriter(BaseWriter):
                 ) TO '{self.path.as_posix()}' (
                     FORMAT ICEBERG,
                     COMPRESSION '{self.compression.upper()}'
+                    {partition_clause}
                 )
                 """
             )
             logger.info(
-                "Wrote Iceberg table to %s (%d batches, engine=duckdb, compression=%s)",
+                "Wrote Iceberg table to %s (%d batches, engine=duckdb, compression=%s, partition_by=%s)",
                 self.path,
                 self._num_batches,
                 self.compression,
+                self.partition_by,
             )
         finally:
             con.close()
@@ -364,6 +425,8 @@ class IcebergWriter(BaseWriter):
     def _finalize_pyiceberg(self, parquet_files: list[Path]) -> None:
         from pyiceberg.catalog.sql import SqlCatalog
         from pyiceberg.exceptions import NamespaceAlreadyExistsError, NoSuchTableError
+        from pyiceberg.partitioning import PartitionField, PartitionSpec
+        from pyiceberg.transforms import IdentityTransform
         import pyarrow.parquet as pq
 
         catalog_db = self.path / ".iceberg_catalog.db"
@@ -388,9 +451,30 @@ class IcebergWriter(BaseWriter):
         except NoSuchTableError:
             pass
 
+        partition_spec = None
+        if self.partition_by:
+            field_names = [f.name for f in schema]
+            if self.partition_by not in field_names:
+                logger.warning(
+                    "Partition field %r not in schema (%s), ignoring",
+                    self.partition_by,
+                    field_names,
+                )
+            else:
+                source_id = field_names.index(self.partition_by)
+                partition_spec = PartitionSpec(
+                    PartitionField(
+                        source_id=source_id,
+                        field_id=1000,
+                        transform=IdentityTransform(),
+                        name=self.partition_by,
+                    )
+                )
+
         table = catalog.create_table(
             ("ctgov", self.table_name),
             schema,
+            partition_spec=partition_spec,
             location=str(self.path),
         )
 
@@ -399,10 +483,11 @@ class IcebergWriter(BaseWriter):
             table.append(tbl)
 
         logger.info(
-            "Wrote Iceberg table to %s (%d batches, engine=pyiceberg, compression=%s)",
+            "Wrote Iceberg table to %s (%d batches, engine=pyiceberg, compression=%s, partition_by=%s)",
             self.path,
             self._num_batches,
             self.compression,
+            self.partition_by,
         )
 
     @staticmethod
@@ -430,7 +515,10 @@ class StorageWriter:
     table: str = "studies"
     batch_size: int = 10000
     compression: str = "snappy"
+    validate_schema: bool = True
+    partition_by: str | None = None
     _writer: BaseWriter | None = None
+    _schema: SchemaValidator | None = None
 
     def open(self, path: Path | None = None) -> None:
         p = Path(path or self.output_path)
@@ -444,6 +532,7 @@ class StorageWriter:
         elif self.fmt == "iceberg":
             kwargs["table"] = self.table
             kwargs["compression"] = self.compression
+            kwargs["partition_by"] = self.partition_by
 
         if self.fmt in ("parquet", "duckdb", "iceberg"):
             kwargs.setdefault("batch_size", self.batch_size)
@@ -452,12 +541,19 @@ class StorageWriter:
 
         self._writer = writer_cls(p, **kwargs)
         self._writer.open()
+        self._schema = SchemaValidator(enabled=self.validate_schema)
 
     def write(self, record: dict[str, Any]) -> None:
         if self._writer is None:
             raise RuntimeError("StorageWriter not opened. Call .open() first.")
+        if self._schema:
+            self._schema.validate(record)
         self._writer.write(record)
 
     def close(self) -> None:
         if self._writer:
             self._writer.close()
+        if self._schema and self._schema.fields:
+            s = self._schema.summary()
+            if s:
+                logger.info(s)
