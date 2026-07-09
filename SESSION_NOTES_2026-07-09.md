@@ -134,3 +134,23 @@ data/                   (output directory)
 ### Test files added
 - `tests/test_aact.py` — AactClient unit tests (mocked psycopg2)
 - `tests/test_iceberg_e2e.py` — full pipeline test (parser→storage→iceberg) + partitioned write test
+
+### DONE — AACT env-var credentials
+- AACT now requires free registration (public `aact`/`aact` creds locked down).
+- `AactClient` defaults to `os.environ.get("AACT_USER", "aact")` and `os.environ.get("AACT_PASSWORD", "aact")` — set `AACT_USER` / `AACT_PASSWORD` env vars to use your registered credentials.
+
+### DONE — PyPI publishing prep
+- Added `[project.urls]` (Homepage, Source, Tracker, Documentation) to `pyproject.toml`.
+- Added 12 Trove classifiers for Python 3.10–3.12, healthcare/science audience.
+- Fixed `project.license` from TOML table (`{text = "MIT"}`) to SPDX string (`"MIT"`).
+- Removed deprecated License classifier (SPDX supersedes it).
+- Author updated from "ClinicalTrials.govParser" to "Zanderl1987".
+- `python -m build` passes cleanly (sdist + wheel).
+
+### Known issues
+- AACT cloud access requires free registration at https://aact.ctti-clinicaltrials.org/connect
+- Real API tests blocked (403) — gated behind `CTGOV_INTEGRATION_TESTS=1`
+
+### Next Move
+- Verify `pip install clinicaltrials-parser[iceberg]` from a clean env
+- Push to PyPI with `twine upload dist/*`

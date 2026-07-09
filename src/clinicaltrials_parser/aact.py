@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
@@ -9,8 +10,8 @@ logger = logging.getLogger(__name__)
 AACT_HOST = "aact-db.ctti-clinicaltrials.org"
 AACT_PORT = 5432
 AACT_DB = "aact"
-AACT_USER = "aact"
-AACT_PASSWORD = "aact"  # public read-only
+AACT_USER = os.environ.get("AACT_USER", "aact")
+AACT_PASSWORD = os.environ.get("AACT_PASSWORD", "aact")  # now requires free registration
 DEFAULT_PAGE_SIZE = 1000
 
 AACT_STUDY_QUERY = """
