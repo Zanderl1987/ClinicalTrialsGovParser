@@ -17,7 +17,6 @@ from clinicaltrials_parser.storage import (
     _flatten_for_csv,
 )
 
-
 SAMPLE_RECORDS = [
     {"nct_id": "NCT001", "status": "COMPLETED", "conditions": ["Cancer"]},
     {"nct_id": "NCT002", "status": "RECRUITING", "conditions": ["Diabetes", "Obesity"]},

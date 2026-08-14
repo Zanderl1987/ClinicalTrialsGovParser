@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from clinicaltrials_parser.models import Study
 
-
 RAW_STUDY = {
     "protocolSection": {
         "identificationModule": {

@@ -8,7 +8,6 @@ import pytest
 
 from clinicaltrials_parser.client import ClinicalTrialsClient, RateLimiter
 
-
 SAMPLE_STUDY = {
     "protocolSection": {
         "identificationModule": {
