@@ -1,8 +1,18 @@
 # ClinicalTrials.gov Parser
 
+![CI](https://github.com/Zanderl1987/ClinicalTrialsGovParser/actions/workflows/test.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 Fetch, parse, and export all ~593K clinical trial records from [ClinicalTrials.gov](https://clinicaltrials.gov) using the public API v2. No API key required.
 
 Outputs to JSONL, JSON array, CSV, Parquet, or DuckDB.
+
+The registry's API is generous but its records are deeply nested, paginated, and large
+enough that any real pull will get interrupted. This handles the parts that make that
+tedious: rate-limited pagination, a resume mode that won't silently corrupt your output,
+and a flattening layer that turns the nested protocol sections into something you can put
+in a table.
 
 ## Install
 
@@ -170,7 +180,19 @@ The API returns a nested JSON structure per study. The key sections in `protocol
 
 Studies with results also include a `resultsSection` with baseline data, outcome measures, and adverse events.
 
-## Integration tests
+## Testing
+
+```bash
+pytest
+```
+
+69 unit tests, run against Python 3.10, 3.11, and 3.12 on every push and pull request.
+A round of them exists because of bugs found in review rather than by design: DuckDB
+output was writing nothing usable, `--resume` could lose records, `intervention_types`
+pulled the wrong field, and the DuckDB table name was interpolated straight into SQL.
+Each of those now has a test that fails if it comes back.
+
+### Integration tests
 
 Real API tests are skipped by default. To run them:
 
