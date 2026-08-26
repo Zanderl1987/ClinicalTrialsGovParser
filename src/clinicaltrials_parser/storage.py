@@ -174,7 +174,7 @@ class CsvWriter(BaseWriter):
         p = Path(path or self.path)
         mode = "w"
         if self.append and p.exists() and p.stat().st_size > 0:
-            with open(p, "r", encoding="utf-8", newline="") as f:
+            with open(p, encoding="utf-8", newline="") as f:
                 existing_header = next(csv.reader(f), None)
             if existing_header:
                 self._fieldnames = existing_header
@@ -326,8 +326,9 @@ def _check_duckdb_iceberg() -> bool:
 
     _DUCKDB_HAS_ICEBERG = False
     try:
-        import duckdb
         import tempfile
+
+        import duckdb
 
         con = duckdb.connect()
         try:
@@ -475,11 +476,11 @@ class IcebergWriter(BaseWriter):
             con.close()
 
     def _finalize_pyiceberg(self, parquet_files: list[Path]) -> None:
+        import pyarrow.parquet as pq
         from pyiceberg.catalog.sql import SqlCatalog
         from pyiceberg.exceptions import NamespaceAlreadyExistsError, NoSuchTableError
         from pyiceberg.partitioning import PartitionField, PartitionSpec
         from pyiceberg.transforms import IdentityTransform
-        import pyarrow.parquet as pq
 
         catalog_db = self.path / ".iceberg_catalog.db"
         catalog = SqlCatalog(

@@ -4,4 +4,7 @@ click>=8.1
 pyarrow>=14
 polars>=1.0
 tqdm>=4.66
+
+# Optional: needed for -f duckdb / -f iceberg output.
+# pip install clinicaltrials-parser[duckdb] or [iceberg] instead if installing the package.
 duckdb>=0.10

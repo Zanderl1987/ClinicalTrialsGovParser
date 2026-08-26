@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from clinicaltrials_parser.client import ClinicalTrialsClient
 from clinicaltrials_parser.models import Study
@@ -55,11 +56,9 @@ class StudyParser:
         max_studies: int | None = None,
         fields: str | None = None,
         flat: bool = True,
-        on_batch: Callable[[list[dict[str, Any]]], None] | None = None,
         **query_params: Any,
     ) -> Iterator[dict[str, Any]]:
         count = 0
-        batch: list[dict[str, Any]] = []
 
         try:
             for raw_study in self.client.iter_studies(fields=fields, **query_params):
@@ -89,17 +88,8 @@ class StudyParser:
                 yield parsed
                 count += 1
 
-                if on_batch:
-                    batch.append(parsed)
-                    if len(batch) >= self.batch_size:
-                        on_batch(batch)
-                        batch = []
-
                 if count % self.batch_size == 0:
                     self._save_resume_state()
-
-            if on_batch and batch:
-                on_batch(batch)
         finally:
             # Always persist progress, including on a mid-fetch exception, so a
             # crash doesn't lose track of everything already fetched this run.

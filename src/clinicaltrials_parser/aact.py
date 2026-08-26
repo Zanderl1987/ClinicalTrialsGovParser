@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ class AactClient:
 
     def __post_init__(self):
         try:
-            import psycopg2
+            import psycopg2  # noqa: F401
         except ImportError:
             raise ImportError(
                 "psycopg2 is required for AACT database access. "

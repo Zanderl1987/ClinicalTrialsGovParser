@@ -54,8 +54,11 @@ def main(verbose: int) -> None:
 @click.option("--table", default="studies", help="DuckDB table name or Iceberg table name")
 @click.option("--partition-by", type=str, default=None,
               help="Iceberg partition field (e.g. overall_status, study_type)")
-@click.option("--compression", type=click.Choice(["snappy", "zstd", "gzip", "lz4", "brotli"]), default="snappy", show_default=True,
-              help="Parquet compression codec (parquet/iceberg formats)")
+@click.option(
+    "--compression", type=click.Choice(["snappy", "zstd", "gzip", "lz4", "brotli"]),
+    default="snappy", show_default=True,
+    help="Parquet compression codec (parquet/iceberg formats)",
+)
 @click.option("--batch-size", type=int, default=10000, show_default=True,
               help="Records per batch for streaming writes (parquet/duckdb/iceberg)")
 @click.option("--validate-schema/--no-validate-schema", default=True, show_default=True,
@@ -121,7 +124,13 @@ def fetch(
         except ValueError as e:
             raise click.ClickException(str(e)) from e
 
-    storage = StorageWriter(fmt=format, batch_size=batch_size, compression=compression, validate_schema=validate_schema, partition_by=partition_by)
+    storage = StorageWriter(
+        fmt=format,
+        batch_size=batch_size,
+        compression=compression,
+        validate_schema=validate_schema,
+        partition_by=partition_by,
+    )
     if format in ("duckdb", "iceberg"):
         storage.table = table
 
@@ -139,9 +148,9 @@ def fetch(
     if query_lead:
         query_params["query.lead"] = query_lead
     if status:
-        query_params["filter.overallStatus"] = [s.strip() for s in status.split(",")]
+        query_params["filter.overallStatus"] = [s.strip() for s in status.split(",") if s.strip()]
     if phase:
-        query_params["filter.phase"] = [p.strip() for p in phase.split(",")]
+        query_params["filter.phase"] = [p.strip() for p in phase.split(",") if p.strip()]
     if study_type:
         query_params["filter.studyType"] = study_type
 
@@ -203,7 +212,7 @@ def stats(
     if query_cond:
         params["query.cond"] = query_cond
     if status:
-        params["filter.overallStatus"] = [s.strip() for s in status.split(",")]
+        params["filter.overallStatus"] = [s.strip() for s in status.split(",") if s.strip()]
     if study_type:
         params["filter.studyType"] = study_type
     total = client.get_total_count(**params)

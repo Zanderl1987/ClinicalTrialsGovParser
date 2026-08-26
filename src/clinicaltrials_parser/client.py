@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Iterator
+from typing import Any
 
 import httpx
 
@@ -124,8 +125,7 @@ class ClinicalTrialsClient:
         next_token = None
         while True:
             page, next_token = self.get_studies_page(page_token=next_token, **params)
-            for study in page:
-                yield study
+            yield from page
             if not next_token:
                 break
 
