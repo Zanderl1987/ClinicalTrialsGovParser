@@ -27,6 +27,21 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _advanced_filter(phase: str | None, study_type: str | None) -> str | None:
+    """Build the API's `filter.advanced` expression for phase / study type.
+
+    The v2 API has no phase or study-type filter parameter (it answers 400 to one);
+    these fields are only filterable through Essie `AREA[...]` expressions.
+    """
+    clauses = []
+    if phase:
+        phases = [p.strip() for p in phase.split(",") if p.strip()]
+        clauses.append(f"AREA[Phase]({' OR '.join(phases)})")
+    if study_type:
+        clauses.append(f"AREA[StudyType]{study_type}")
+    return " AND ".join(clauses) or None
+
+
 @click.group()
 @click.option("-v", "--verbose", count=True, help="Increase verbosity")
 @click.version_option(version="0.1.0", prog_name="ctgov-parser")
@@ -149,10 +164,9 @@ def fetch(
         query_params["query.lead"] = query_lead
     if status:
         query_params["filter.overallStatus"] = [s.strip() for s in status.split(",") if s.strip()]
-    if phase:
-        query_params["filter.phase"] = [p.strip() for p in phase.split(",") if p.strip()]
-    if study_type:
-        query_params["filter.studyType"] = study_type
+    advanced = _advanced_filter(phase, study_type)
+    if advanced:
+        query_params["filter.advanced"] = advanced
 
     if format == "iceberg":
         click.echo(f"Creating Iceberg warehouse at {Path(output).resolve()}")
@@ -213,8 +227,9 @@ def stats(
         params["query.cond"] = query_cond
     if status:
         params["filter.overallStatus"] = [s.strip() for s in status.split(",") if s.strip()]
-    if study_type:
-        params["filter.studyType"] = study_type
+    advanced = _advanced_filter(None, study_type)
+    if advanced:
+        params["filter.advanced"] = advanced
     total = client.get_total_count(**params)
     click.echo(f"Total studies matching filters: {total:,}")
 

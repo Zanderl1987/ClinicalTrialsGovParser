@@ -66,8 +66,12 @@ class TestClinicalTrialsClientUnit:
         client = ClinicalTrialsClient(page_size=10)
         with patch.object(client, "_request") as mock_request:
             mock_request.return_value = _mock_response(json_data={"totalCount": 593126})
-            count = client.get_total_count()
+            count = client.get_total_count(**{"filter.overallStatus": "TERMINATED"})
             assert count == 593126
+            path, params = mock_request.call_args.args[1], mock_request.call_args.kwargs["params"]
+            assert path == "/studies"
+            assert params["countTotal"] == "true"
+            assert params["filter.overallStatus"] == "TERMINATED"
 
     def test_get_study(self):
         client = ClinicalTrialsClient(page_size=10)
@@ -83,6 +87,14 @@ class TestClinicalTrialsClientUnit:
             studies, next_token = client.get_studies_page(pageSize=10)
             assert len(studies) == 1
             assert next_token is None
+
+    def test_get_studies_page_drops_none_params(self):
+        # Regression: fields=None was sent as an empty "fields=" and the API answered 400.
+        client = ClinicalTrialsClient(page_size=10)
+        with patch.object(client, "_request") as mock_request:
+            mock_request.return_value = _mock_response(json_data=SAMPLE_PAGE)
+            client.get_studies_page(fields=None)
+            assert "fields" not in mock_request.call_args.kwargs["params"]
 
     def test_iter_studies(self):
         client = ClinicalTrialsClient(page_size=10)
@@ -222,9 +234,15 @@ class TestClinicalTrialsClientIntegration:
         assert count == 25
 
     def test_fetch_all_studies(self):
+        # fetch_all_studies pages to the end, so it must be filtered; unfiltered it
+        # downloads the whole registry.
         client = ClinicalTrialsClient(page_size=100)
-        studies = client.fetch_all_studies(pageSize=100)
-        assert len(studies) == 100
+        studies = client.fetch_all_studies(**{"filter.ids": "NCT04000009,NCT00000102"})
+        assert len(studies) == 2
+
+    def test_get_total_count_filtered(self):
+        client = ClinicalTrialsClient(page_size=10)
+        assert client.get_total_count(**{"filter.ids": "NCT04000009,NCT00000102"}) == 2
 
     def test_get_stats(self):
         client = ClinicalTrialsClient(page_size=10)
@@ -235,12 +253,12 @@ class TestClinicalTrialsClientIntegration:
     def test_get_field_metadata(self):
         client = ClinicalTrialsClient(page_size=10)
         metadata = client.get_field_metadata()
-        assert isinstance(metadata, dict)
+        assert isinstance(metadata, list) and metadata
 
     def test_get_enums(self):
         client = ClinicalTrialsClient(page_size=10)
         enums = client.get_enums()
-        assert isinstance(enums, dict)
+        assert isinstance(enums, list) and enums
 
     def test_get_search_areas(self):
         client = ClinicalTrialsClient(page_size=10)
