@@ -236,9 +236,17 @@ class Study(BaseModel):
             "study_type": design_mod.study_type if design_mod else None,
             "phases": design_mod.phases if design_mod else None,
             "conditions": cond_mod.conditions if cond_mod else None,
-            "intervention_types": list({i.type for i in (arms_mod.interventions or []) if i.type}) if arms_mod else None,
-            "lead_sponsor": sponsor_mod.lead_sponsor.name if sponsor_mod and sponsor_mod.lead_sponsor else None,
-            "enrollment_count": design_mod.enrollment_info.get("count") if design_mod and design_mod.enrollment_info else None,
+            "intervention_types": (
+                list({i.type for i in (arms_mod.interventions or []) if i.type}) if arms_mod else None
+            ),
+            "lead_sponsor": (
+                sponsor_mod.lead_sponsor.name if sponsor_mod and sponsor_mod.lead_sponsor else None
+            ),
+            "enrollment_count": (
+                design_mod.enrollment_info.get("count")
+                if design_mod and design_mod.enrollment_info
+                else None
+            ),
             "has_results": self.has_results,
         }
         return d

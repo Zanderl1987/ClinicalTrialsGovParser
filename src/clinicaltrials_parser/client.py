@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Iterator
+from typing import Any
 
 import httpx
 
@@ -11,7 +12,11 @@ BASE_URL = "https://clinicaltrials.gov/api/v2"
 MAX_PAGE_SIZE = 1000
 DEFAULT_PAGE_SIZE = 100
 DEFAULT_RATE_LIMIT = 10
-USER_AGENT = "ClinicalTrialsGovParser/0.1.0 (+https://github.com/clinicaltrials-parser)"
+# No custom User-Agent: as of 2026-09 the site's WAF 403s every non-default UA tried
+# (including this package's old one and "Mozilla/5.0"), but accepts httpx's default.
+# /stats/size ignores query filters and has no totalCount, so counts come from
+# /studies?countTotal=true instead.
+COUNT_PARAMS = {"countTotal": "true", "pageSize": 1, "fields": "NCTId"}
 
 
 class RateLimiter:
@@ -43,7 +48,6 @@ class ClinicalTrialsClient:
         if self._client is None:
             self._client = httpx.Client(
                 timeout=httpx.Timeout(self.timeout),
-                headers={"User-Agent": USER_AGENT},
             )
         if self._rate_limiter is None:
             self._rate_limiter = RateLimiter(self.rate_limit)
@@ -98,7 +102,8 @@ class ClinicalTrialsClient:
         return resp.json()
 
     def get_total_count(self, **params: Any) -> int:
-        return self.get_stats(**params)["totalCount"]
+        resp = self._request("GET", "/studies", params={**params, **COUNT_PARAMS})
+        return resp.json()["totalCount"]
 
     def get_study(self, nct_id: str, fields: str | None = None) -> dict[str, Any]:
         params = {}
@@ -110,7 +115,8 @@ class ClinicalTrialsClient:
     def get_studies_page(
         self, page_token: str | None = None, **params: Any
     ) -> tuple[list[dict[str, Any]], str | None]:
-        params_out = dict(params)
+        # httpx sends a None value as an empty `key=`, which the API rejects (400).
+        params_out = {k: v for k, v in params.items() if v is not None}
         params_out.setdefault("pageSize", self.page_size)
         if page_token:
             params_out["pageToken"] = page_token
@@ -124,8 +130,7 @@ class ClinicalTrialsClient:
         next_token = None
         while True:
             page, next_token = self.get_studies_page(page_token=next_token, **params)
-            for study in page:
-                yield study
+            yield from page
             if not next_token:
                 break
 
@@ -135,7 +140,7 @@ class ClinicalTrialsClient:
             results.append(study)
         return results
 
-    def get_field_metadata(self) -> dict[str, Any]:
+    def get_field_metadata(self) -> list[dict[str, Any]]:
         resp = self._request("GET", "/studies/metadata")
         return resp.json()
 
@@ -143,7 +148,7 @@ class ClinicalTrialsClient:
         resp = self._request("GET", "/studies/search-areas")
         return resp.json()
 
-    def get_enums(self) -> dict[str, Any]:
+    def get_enums(self) -> list[dict[str, Any]]:
         resp = self._request("GET", "/studies/enums")
         return resp.json()
 
@@ -179,7 +184,6 @@ class AsyncClinicalTrialsClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
-                headers={"User-Agent": USER_AGENT},
             )
         if self._rate_limiter is None:
             self._rate_limiter = AsyncRateLimiter(self.rate_limit)
@@ -234,8 +238,8 @@ class AsyncClinicalTrialsClient:
         return resp.json()
 
     async def get_total_count(self, **params: Any) -> int:
-        stats = await self.get_stats(**params)
-        return stats["totalCount"]
+        resp = await self._request("GET", "/studies", params={**params, **COUNT_PARAMS})
+        return resp.json()["totalCount"]
 
     async def get_study(self, nct_id: str, fields: str | None = None) -> dict[str, Any]:
         params = {}
@@ -247,7 +251,8 @@ class AsyncClinicalTrialsClient:
     async def get_studies_page(
         self, page_token: str | None = None, **params: Any
     ) -> tuple[list[dict[str, Any]], str | None]:
-        params_out = dict(params)
+        # httpx sends a None value as an empty `key=`, which the API rejects (400).
+        params_out = {k: v for k, v in params.items() if v is not None}
         params_out.setdefault("pageSize", self.page_size)
         if page_token:
             params_out["pageToken"] = page_token
@@ -272,7 +277,7 @@ class AsyncClinicalTrialsClient:
             results.append(study)
         return results
 
-    async def get_field_metadata(self) -> dict[str, Any]:
+    async def get_field_metadata(self) -> list[dict[str, Any]]:
         resp = await self._request("GET", "/studies/metadata")
         return resp.json()
 
@@ -280,6 +285,6 @@ class AsyncClinicalTrialsClient:
         resp = await self._request("GET", "/studies/search-areas")
         return resp.json()
 
-    async def get_enums(self) -> dict[str, Any]:
+    async def get_enums(self) -> list[dict[str, Any]]:
         resp = await self._request("GET", "/studies/enums")
         return resp.json()
