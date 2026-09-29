@@ -38,7 +38,7 @@ RUNNING = {"NOT_YET_RECRUITING", "RECRUITING", "ENROLLING_BY_INVITATION", "ACTIV
 
 # Never features: identifiers, the label, post-outcome text, raw dates (years are kept).
 NOT_FEATURES = {"nct_id", "overall_status", "why_stopped", "first_submit_date", "start_date", "sponsor_name", "y",
-                "primary_completion_date", "reg_after_end"}
+                "primary_completion_date", "completion_date", "reg_after_end"}
 CATEGORICAL = ["sponsor_class", "responsible_party", "phase", "allocation", "intervention_model",
                "primary_purpose", "masking", "sex"]
 
